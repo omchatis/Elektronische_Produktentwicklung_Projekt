@@ -1,0 +1,6 @@
+Line #,Name,Description,Designator,Revision ID,Revision State,Revision Status,Quantity,Manufacturer 1,Manufacturer Part Number 1,Manufacturer Lifecycle 1,Supplier 1,Supplier Part Number 1,Supplier Unit Price 1,Supplier Subtotal 1
+
+"","Capacitor 470nF +/-40% 10V 0402","Chip Capacitor, 470nF +/-40%, 10V, 0402, Thickness 0.6 mm","C1","","Unknown server","","1","KYOCERA AVX","0402ZD474MAT2A","Volume Production","Mouser","581-0402ZD474MAT2A","0.53257","0.53257"
+"","Capacitor 100 nF +/-10% 50 V 0603","Chip Capacitor, 100 nF, +/- 10%, 50 V, 0603 (1608 Metric)","C2","","Unknown server","","1","Yageo Group","CC0603KRX7R9BB104","Volume Production","Arrow Electronics","CC0603KRX7R9BB104","0.00192","0.00192"
+"","B7B-PH-SM4-TB(LF)(SN)","CONN HEADER SMD 7POS 2MM","J1","CMP-17439-000233-1","New From Design","Up to date","1","JST","B7B-PH-SM4-TB(LF)(SN)","Volume Production","Mouser","306-B7BPHSM4TBLFSN","0.72464","0.72464"
+"","AS5048A-HTSP-500","SENSOR ANGLE 360DEG SMD","U1","CMP-22826-000004-1","New From Design","Up to date","1","ams","AS5048A-HTSP-500","Volume Production","DigiKey","AS5048A-HTSP-500CT-ND","6.9","6.9"
