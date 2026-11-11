@@ -4,21 +4,21 @@
 #include "stm32g4xx.h"
 
 /*
- * Motor 1 bench test for the STM32G431 and DRV10975Z.
+ * Motor 1 continuous drive for the STM32G431 and DRV10975Z.
  *
  * The STM32 wakes and configures the driver over I2C, requests motion once,
- * samples the driver's registers, and attempts to stop it when the test ends.
+ * monitors the driver's registers, and requests a stop on an error,
+ * overspeed, or a debugger stop request.
  * The DRV10975Z generates the three-phase PWM and runs the startup sequence.
  * See TI DRV10975 datasheet SLVSCP2F, sections 8.4 and 8.5.3, for driver
  * operation and register definitions.
  *
  * For startup tuning, drv_configure_motor() contains the PWM frequency,
  * startup current, alignment time, and electrical acceleration settings.
- * Inspect the motor_* variables after main() reaches its final idle loop.
+ * Inspect the motor_* variables during the run or after it stops.
  */
 enum {
-    TEST_COMMAND = 24, /* About 4.7% drive command for the low-speed trial. */
-    TEST_RUN_MS = 25000, /* Allow about 21 s to reach handoff, then observe. */
+    TEST_COMMAND = 24, /* About 4.7% drive command for the low-speed run. */
     TEST_MAX_RPM = 1000, /* Stop at this reported speed (100 electrical Hz). */
     TEST_OPEN_LOOP_ONLY = 0, /* 0 allows handoff. Set to 1 to test only startup. */
     WAKE_TIMEOUT_MS = 500, /* Bench wake window; SPEED high can request motion. */
@@ -45,6 +45,8 @@ enum {
     /* Motor parameters and operating options (volatile register image). */
     DRV_MOTOR_RESISTANCE = 0x20,
     DRV_MOTOR_BEMF = 0x21,
+    DRV_COMMUTATION_ADVANCE = 0x22,
+    DRV_STARTUP_OPTIONS = 0x23,
     DRV_STARTUP_CURRENT = 0x24,
     DRV_STARTUP_ACCELERATION = 0x25,
     DRV_ALIGNMENT = 0x26,
@@ -58,6 +60,7 @@ enum {
     DRV_OVERRIDE = 1U << 7, /* SpeedCtrl2: select the I2C speed command. */
     DRV_SLEEP_DISABLE = 1U << 7, /* EECtrl: keep the awake driver accessible. */
     DRV_REGISTER_WRITE_ENABLE = 1U << 6, /* EECtrl: enable configuration writes. */
+    DRV_INITIAL_SPEED_DETECT = 1U << 3, /* SysOpt1 ISDen. */
     DRV_REGULATOR_3V3 = 1U << 2, /* SysOpt8 VregSel: 3.3 V setting. */
     DRV_STATUS_ERROR = 0xF0, /* Overtemp, sleep, overcurrent, or lock. */
     DRV_STATUS_LOCK = 1U << 4,
@@ -76,7 +79,7 @@ enum {
 typedef enum {
     MOTOR_INITIALIZING,
     MOTOR_RUNNING,
-    MOTOR_TEST_FINISHED, /* The drive window expired. Verify rotation separately. */
+    MOTOR_STOP_REQUESTED, /* The debugger requested a stop. Check the ACK. */
     MOTOR_I2C_ERROR,
     MOTOR_REGULATOR_MISMATCH,
     MOTOR_CONFIGURATION_ERROR,
@@ -130,6 +133,7 @@ volatile uint32_t motor_supply_mV;
 volatile uint8_t motor_speed_command; /* Driver input command readback, 0–255. */
 volatile uint8_t motor_buffered_command; /* Driver command buffer, 0–255. */
 volatile bool motor_stop_acknowledged; /* Both zero-command register writes completed. */
+volatile bool motor_stop_requested; /* Set true and let the firmware run to send speed 0. */
 volatile uint8_t motor_initial_status;
 volatile uint8_t motor_initial_fault;
 /* Configuration snapshots. Array index i corresponds to register 0x20 + i. */
@@ -336,8 +340,8 @@ static bool drv_update_register(uint8_t reg, uint8_t mask, uint8_t value)
 
 static bool drv_configure_motor(void)
 {
-    /* Apply this bench profile while the speed command is zero. Writes go to
-     * volatile driver registers and are reapplied each time this test starts. */
+    /* Apply this profile while the speed command is zero. Writes go to
+     * volatile driver registers and are reapplied each time the firmware starts. */
     static const struct {
         uint8_t reg;
         uint8_t mask;
@@ -348,25 +352,31 @@ static bool drv_configure_motor(void)
         {DRV_MOTOR_RESISTANCE, 0xFF, MOTOR_RESISTANCE_FIELD},
         /* 0x21: Kt in bits 6:0. Preserve the existing adjustment mode in bit 7. */
         {DRV_MOTOR_BEMF, 0x7F, MOTOR_BEMF_FIELD},
-        /* 0x24: bits 7:6 set 0.4 A, bits 5:3 set 0.7 VCC/s voltage ramp,
+        /* 0x22: CtrlAdvMd = 0 selects fixed time. TCtrlAdv = 0x49 sets
+         * 2.5 us * (9 << 4) = 360 us of commutation advance. */
+        {DRV_COMMUTATION_ADVANCE, 0xFF, 0x49},
+        /* 0x23: disable initial speed detection for a start from rest. */
+        {DRV_STARTUP_OPTIONS, DRV_INITIAL_SPEED_DETECT, 0x00},
+        /* 0x24: bits 7:6 set 0.8 A, bits 5:3 set 0.7 VCC/s voltage ramp,
          * and bits 2:0 disable braking. The driver calculates startup voltage
          * from the current setting, Rm, and a speed-based BEMF term. Actual
          * winding current can differ from the setting. */
-        {DRV_STARTUP_CURRENT, 0xFF, 0x58},
+        {DRV_STARTUP_CURRENT, 0xFF, 0x98},
         /* 0x25: bits 7:6 set control coefficient 1. Bits 2:0 set
-         * A1 = 0.9 Hz/s and bits 5:3 set A2 = 0.22 Hz/s^2.
+         * A1 = 0.9 Hz/s and bits 5:3 set A2 = 1.6 Hz/s^2.
          * After alignment, the driver advances the field at an electrical
          * frequency of A1*t + 0.5*A2*t^2, with t in seconds. The rotor must
          * follow that field for a successful open-loop start. */
-        {DRV_STARTUP_ACCELERATION, 0xFF, 0xFE},
-        /* 0x26: bits 2:0 set the 2.7 s hold to align the rotor.
-         * Bits 7:3 set the 51.2 Hz electrical handoff threshold. */
-        {DRV_ALIGNMENT, 0xFF, 0x99},
+        {DRV_STARTUP_ACCELERATION, 0xFF, 0xEE},
+        /* 0x26: bits 2:0 set 5.3 s of alignment. Bits 7:3 set the handoff
+         * threshold to 38.4 electrical Hz (384 RPM for six pole pairs).
+         * The programmed ramp reaches this threshold about 6.4 s after alignment. */
+        {DRV_ALIGNMENT, 0xFF, 0x90},
         /* 0x27: enable current, speed, Kt, and no-motor fault detection.
          * Disable inductive anti-voltage-surge (AVS) for the DRV10975Z. */
         {DRV_PROTECTION, 0xF8, 0xF0},
-        /* 0x28: 0.6 A closed-loop acceleration limit and 0.8 A lock threshold. */
-        {DRV_CURRENT_LIMITS, 0xFE, 0x32},
+        /* 0x28: 1.2 A closed-loop acceleration limit and 1.6 A lock threshold. */
+        {DRV_CURRENT_LIMITS, 0xFE, 0x66},
         /* 0x29: enable closed-loop stall detection, set 0.37 VCC/s closed-loop
          * ramp and 360 ns dead time between complementary switch transitions. */
         {DRV_CLOSED_LOOP_RAMP, 0xFF, 0xC8},
@@ -496,7 +506,7 @@ static bool drv_wake(void)
     return ready;
 }
 
-static MotorTestState run_motor_test(void)
+static MotorTestState run_motor(void)
 {
     uint8_t value;
     /* Check the board's expected VregSel value before requesting motion. */
@@ -534,18 +544,19 @@ static MotorTestState run_motor_test(void)
     } else {
         delay_ms(1000);
     }
+    if (motor_stop_requested) {
+        return MOTOR_STOP_REQUESTED;
+    }
     arm_motor_fg_capture();
     if (!drv_set_speed(TEST_COMMAND)) {
         return MOTOR_I2C_ERROR;
     }
     motor_state = MOTOR_RUNNING;
 
-    uint32_t start = tick_ms;
     /* Allow the driver to process restart before checking retained lock status.
-     * The drive window uses MCU time. Halting here pauses the timeout while the
-     * DRV10975Z can continue running independently. */
+     * While the MCU is halted, the DRV10975Z keeps its last speed command. */
     delay_ms(20);
-    while (tick_ms - start < TEST_RUN_MS) {
+    while (!motor_stop_requested) {
         if (!drv_read(DRV_STATUS, &value)) {
             return MOTOR_I2C_ERROR;
         }
@@ -564,7 +575,7 @@ static MotorTestState run_motor_test(void)
         }
         delay_ms(20); /* Pause between polls. I2C reads add to this interval. */
     }
-    return MOTOR_TEST_FINISHED;
+    return MOTOR_STOP_REQUESTED;
 }
 
 int main(void)
@@ -575,9 +586,9 @@ int main(void)
     init_motor_pins();
     init_i2c();
 
-    /* Use one exit path for success and errors. A stop attempt updates the I2C
+    /* Use one exit path for stop requests and errors. A stop attempt updates the I2C
      * diagnostics, so save the original failure before sending the command. */
-    MotorTestState result = run_motor_test();
+    MotorTestState result = run_motor();
     EXTI->IMR1 &= ~EXTI_IMR1_IM11; /* Freeze the FG count before stopping. */
     if (i2c_diagnostic.error != I2C_ERROR_NONE) {
         motor_i2c_failure = i2c_diagnostic;
