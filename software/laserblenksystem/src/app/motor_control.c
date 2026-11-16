@@ -157,7 +157,11 @@ static void configure_motor(motor_control_t *motor)
         finish_motor(motor, MOTOR_I2C_ERROR);
         return;
     }
-    if (!regulator_3v3)
+    /* The board's VREG clamp is designed for the 3.3 V selection. Check both
+     * the loaded value and any profile override before writing registers. */
+    uint8_t regulator_selection = motor->profile->registers.SysOpt8.VregSel;
+    bool profile_uses_3v3 = regulator_selection == DRV10975_KEEP || regulator_selection == 0b1;
+    if (!regulator_3v3 || !profile_uses_3v3)
     {
         finish_motor(motor, MOTOR_REGULATOR_MISMATCH);
         return;
@@ -188,8 +192,8 @@ static void configure_motor(motor_control_t *motor)
         return;
     }
 
-    bool configured = drv10975_configure(&motor->driver, motor->profile->settings,
-                                         motor->profile->settings_count, &motor->debug->config);
+    bool configured = drv10975_configure(&motor->driver, &motor->profile->registers,
+                                         &motor->debug->config);
     if (!configured)
     {
         finish_motor(motor, MOTOR_CONFIGURATION_ERROR);

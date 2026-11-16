@@ -28,6 +28,25 @@ reported overspeed, or failure. The wake retry delay, lock recovery wait,
 and poll interval use timestamps so other device services can run between
 steps. Each I²C transaction is synchronous and bounded.
 
+## Motor register settings
+
+Each motor profile uses the same DRV10975 register layout. The groups
+`MotorParam1` through `SysOpt9` and their field names match the datasheet's
+register map. Edit the field as an unshifted binary code. For example,
+within `SysOpt7`, `.ClsLpAccel = 0b101` selects 0.19 VCC/s and
+`.ClsLpAccel = 0b111` selects 0.045 VCC/s.
+
+Set a field to `DRV10975_KEEP` to preserve its current value on the driver.
+Set every field explicitly, since C initializes omitted fields to zero
+and zero is a valid code. The driver validates codes, combines edits that
+share an address, and preserves the other bits. It skips writing a register
+when all its fields are set to `DRV10975_KEEP`.
+
+`KEEP` uses the value already in the driver. This is normally the value
+loaded from EEPROM at driver power-on. If only the STM32 resets, the driver
+can still hold a previous volatile setting. Profile edits apply to volatile
+registers. The firmware checks that this board's regulator stays at 3.3 V.
+
 ## Debugger watches
 
 Expand `motor1_debug` in the debugger. The previous standalone watches now
@@ -37,7 +56,7 @@ have these paths.
 | --- | --- |
 | `motor1_debug.state`, `.fault` | Run state and the driver's fault code. |
 | `motor1_debug.rpm` | Driver speed readback converted using the profile's pole-pair count. In open loop, check actual shaft motion separately. |
-| `motor1_debug.closed_loop_fg_edges` | Falling FG edges recorded by the board and copied at each poll or stop. Repeated edges indicate that the driver entered closed loop. |
+| `motor1_debug.closed_loop_fg_edges` | Falling FG edges recorded by the board and copied at each poll or stop. With `FGOLsel = 0b01`, repeated edges indicate that the driver entered closed loop. |
 | `motor1_debug.phase_current_ma`, `.peak_phase_current_ma`, `.current_raw_at_peak` | The last complete sample, highest sampled conversion, and the raw code associated with the peak. |
 | `motor1_debug.config.before[3]`, `.config.after[3]` | Register `0x23` before and after configuration. Array index zero is register `0x20`. |
 | `motor1_debug.kt_trace` | Last 64 complete polls with elapsed time, raw `MotorKt1/2`, RPM, FG count, status, and buffered command. |
@@ -53,7 +72,7 @@ After a fault, run `p motor1_debug.kt_trace`. If the trace is full,
 of the array. Otherwise, the first `count` entries are valid in order.
 `fault_elapsed_ms` records when the running firmware saw the driver fault.
 Each `kt_raw` is the combined register value. Divide by 2884 for V/Hz.
-With the current `Kt = 0x07` and `KtLckThr = 3`, raw values below 7 or
+With `Kt = 0x07` and a loaded `KtLckThr = 3`, raw values below 7 or
 above 28 fall outside the configured Lock2 window.
 
 ## Adding hardware later

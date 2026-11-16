@@ -2,7 +2,6 @@
 #define DRIVERS_DRV10975_H
 
 #include <stdbool.h>
-#include <stddef.h>
 #include <stdint.h>
 
 #include "drivers/stm32_i2c.h"
@@ -12,22 +11,9 @@ enum
     DRV10975_I2C_ADDRESS = 0x52,
     DRV10975_MAX_SPEED_COMMAND = 511,
 
-    /* Configuration registers used in motor profiles. */
-    DRV10975_MOTOR_RESISTANCE = 0x20,
-    DRV10975_MOTOR_BEMF = 0x21,
-    DRV10975_COMMUTATION_ADVANCE = 0x22,
-    DRV10975_STARTUP_OPTIONS = 0x23,
-    DRV10975_STARTUP_CURRENT = 0x24,
-    DRV10975_STARTUP_ACCELERATION = 0x25,
-    DRV10975_ALIGNMENT = 0x26,
-    DRV10975_PROTECTION = 0x27,
-    DRV10975_CURRENT_LIMITS = 0x28,
-    DRV10975_CLOSED_LOOP_RAMP = 0x29,
-    DRV10975_REGULATOR = 0x2A,
-    DRV10975_SPEED_MODE = 0x2B,
-    DRV10975_CONFIG_COUNT = DRV10975_SPEED_MODE - DRV10975_MOTOR_RESISTANCE + 1,
+    DRV10975_CONFIG_COUNT = 12, /* MotorParam1 (0x20) through SysOpt9 (0x2B). */
+    DRV10975_KEEP = UINT8_MAX, /* Keep the value currently in the driver. */
 
-    DRV10975_INITIAL_SPEED_DETECT = 1U << 3, /* SysOpt1 ISDen. */
     DRV10975_STATUS_LOCK = 1U << 4,
     DRV10975_STATUS_THERMAL_OR_OVERCURRENT = (1U << 7) | (1U << 5),
     DRV10975_STATUS_ERROR = 0xF0 /* Overtemperature, sleep or standby, overcurrent, and lock. */
@@ -42,12 +28,99 @@ typedef struct
     stm32_i2c_diagnostic_t last_transfer;
 } drv10975_t;
 
+/* Field names and groups follow the datasheet register map. Set each field
+ * explicitly to an unshifted binary code or DRV10975_KEEP. Zero is a code. */
 typedef struct
 {
-    uint8_t address;
-    uint8_t mask;
-    uint8_t value;
-} drv10975_setting_t;
+    struct
+    {
+        uint8_t DoubleFreq;
+        uint8_t Rm;
+    } MotorParam1;
+
+    struct
+    {
+        uint8_t AdjMode;
+        uint8_t Kt;
+    } MotorParam2;
+
+    struct
+    {
+        uint8_t CtrlAdvMd;
+        uint8_t TCtrlAdv;
+    } MotorParam3;
+
+    struct
+    {
+        uint8_t ISDThr;
+        uint8_t IPDAdvcAgl;
+        uint8_t ISDen;
+        uint8_t RvsDrEn;
+        uint8_t RvsDrThr;
+    } SysOpt1;
+
+    struct
+    {
+        uint8_t OpenLCurr;
+        uint8_t OpLCurrRt;
+        uint8_t BrkDoneThr;
+    } SysOpt2;
+
+    struct
+    {
+        uint8_t CtrlCoef;
+        uint8_t StAccel2;
+        uint8_t StAccel;
+    } SysOpt3;
+
+    struct
+    {
+        uint8_t Op2ClsThr;
+        uint8_t AlignTime;
+    } SysOpt4;
+
+    struct
+    {
+        uint8_t LockEn3;
+        uint8_t LockEn2;
+        uint8_t LockEn1;
+        uint8_t LockEn0;
+        uint8_t AVSIndEn;
+        uint8_t AVSMEn;
+        uint8_t AVSMMd;
+        uint8_t IPDRlsMd;
+    } SysOpt5;
+
+    struct
+    {
+        uint8_t SWiLimitThr;
+        uint8_t HWiLimitThr;
+    } SysOpt6;
+
+    struct
+    {
+        uint8_t LockEn5;
+        uint8_t ClsLpAccel;
+        uint8_t Deadtime;
+    } SysOpt7;
+
+    struct
+    {
+        uint8_t IPDCurrThr;
+        uint8_t LockEn4;
+        uint8_t VregSel;
+        uint8_t IPDClk;
+    } SysOpt8;
+
+    struct
+    {
+        uint8_t FGOLsel;
+        uint8_t FGcycle;
+        uint8_t KtLckThr;
+        uint8_t SpdCtrlMd;
+        uint8_t CLoopDis;
+    } SysOpt9;
+} drv10975_registers_t;
 
 typedef struct
 {
@@ -78,10 +151,10 @@ bool drv10975_read_regulator_3v3(drv10975_t *driver, bool *is_3v3);
 bool drv10975_read_status(drv10975_t *driver, uint8_t *status);
 bool drv10975_read_fault(drv10975_t *driver, uint8_t *fault);
 
-/* Apply and verify volatile registers. The caller sets the drive command
- * to zero first. The before and after snapshots can be partial on failure. */
-bool drv10975_configure(drv10975_t *driver, const drv10975_setting_t *settings,
-                        size_t count, volatile drv10975_config_snapshot_t *snapshot);
+/* Apply explicit fields and verify the resulting volatile registers. The caller
+ * sets the drive command to zero first. The snapshots can be partial on failure. */
+bool drv10975_configure(drv10975_t *driver, const drv10975_registers_t *registers,
+                        volatile drv10975_config_snapshot_t *snapshot);
 
 /* Read a complete telemetry sample, keeping the speed in electrical units. */
 bool drv10975_read_telemetry(drv10975_t *driver, drv10975_telemetry_t *telemetry);
